@@ -26,6 +26,23 @@ Rien n'a été exécuté pendant cette revue. « Vérifié » signifie qu'un rel
 
 Les librairies ne bloquent pas le projet. Les problèmes les plus graves sont dans les définitions du concept et dans la gestion des échecs.
 
+### Mesures sur les points MODIS 2025
+
+Fichier testé : export EFFIS `hs_modis` pour la France en 2025 (1 857 points, EPSG:3035, version `6.1NRT`). Il n'a ni date de début de feu, ni champ de type de source. La date est `acq_at_s`, car `acq_at` ne garde que le jour.
+
+Sous-ensemble : `admin1` `FRA.10_1` et `FRA.12_1`, supposés être la Nouvelle-Aquitaine et les Pays de la Loire d'après leurs emprises, soit 453 points. Regroupement testé : composantes connexes à moins de 2 km, sans filtre forêt.
+
+| Écart maximal | Événements | Un seul point | Plus de 30 jours | Durée maximale | Plus grande emprise |
+|---|---|---|---|---|---|
+| 3 jours | 289 | 180 | 0 | 5 j | 4,0 km |
+| 7 jours | 271 | 163 | 0 | 18 j | 4,0 km |
+| 14 jours | 252 | 146 | 1 | 32 j | 5,3 km |
+| 30 jours | 240 | 136 | 5 | 109 j | 5,3 km |
+
+- Février à avril regroupe 229 points sur 453 (51 %), juin à août 73 (16 %). Le 20 février en compte 89 à lui seul.
+- Un site vers 44,72 N, 0,81 O revient de fin avril à mi-août (24 points) : à 30 jours d'écart, il forme un événement de 109 jours.
+- `night` vaut 0 partout, y compris à 02:45 : ce champ ne paraît pas fiable.
+
 ### Problèmes bloquants
 
 **1. L'événement n'est pas défini (déduit).** Avec une règle de voisinage en chaîne (moins de 2 km, moins de 30 jours), une source fixe comme un site industriel ou une longue saison de feux peut former un seul événement de plusieurs mois, sur une très grande emprise. Une partie de la brûlure tomberait alors dans l'image « avant ». Par ailleurs, « une date après le feu » contredit « médiane temporelle ». Il faut :
