@@ -86,7 +86,7 @@ Sous-ensemble : `admin1` `FRA.10_1` et `FRA.12_1`, supposés être la Nouvelle-A
 | eo-pipe | `merge_raster` garde le premier pixel, sans tenir compte des nuages | Non utilisé pour les composites |
 | eo-pipe | `merge_vector` ignore les fichiers illisibles et ne reprojette pas | Non utilisé pour la fusion annuelle |
 | eo-pipe | `ParallelBatch` est séquentiel ; pas de reprise de run | Reprise gérée par événement |
-| eo-pipe | Version imposée `gdal==3.12.2` (`pyproject.toml:23`) ; l'import lance bash et met en cache l'environnement OTB (`steps/otb/__init__.py:7-8`) | Coût d'environnement, voir décision 1 |
+| eo-pipe | Version imposée `gdal==3.12.2` (`pyproject.toml:23`) ; l'import lance bash et met en cache l'environnement OTB (`steps/otb/__init__.py:7-8`) | Motif du retrait d'eo-pipe du pilote |
 | eo-stac | Filtre nuages au niveau de la scène uniquement | Part de pixels clairs calculée dans ce projet |
 | eo-stac | Alias `swir1`/`swir2` sans `swir16`/`swir22` d'Earth Search | Clés brutes ou `extra_aliases` (`aliases.py:65`) |
 | eo-stac | Pas de grille commune ni d'offset ; métadonnées d'assets `raster:bands` perdues (`search.py:317-324`) | Grille et offset gérés dans ce projet |
@@ -123,6 +123,9 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 - **EOReader :** gère un seul produit à la fois et n'assemble pas de composites ; la page consultée ne décrit que des produits complets.
 - **pyramids-core :** pas de mosaïque ni de masque nuages, et pas de rioxarray. Le conflit de GDAL n'a pas été testé et n'est plus l'argument principal si eo-pipe est retiré.
 - **`merge_raster` et `merge_vector` d'eo-pipe :** voir les limites ci-dessus.
+- **eo-pipe dans le pilote :** seuls `plan_chunks` et peut-être `SieveStep` serviraient, pour une version imposée de GDAL et des options de compilation propres à la machine.
+- **Fenêtre fixe de plus de 30 jours après le début du feu :** une image prise pendant le feu sous-estime la brûlure, et une attente inutile laisse plus de temps à la repousse.
+- **Écart de 30 jours pour le regroupement :** sur les données 2025, il crée un événement de 109 jours sur un même site.
 - **Fichier unique alimenté au fil de l'eau (Parquet ou GeoPackage) :** Parquet se prête mal à l'ajout, et une reprise par événement devient plus difficile.
 - **Framework de pipeline, abstraction de client FIRMS, classes abstraites et registre de modèles :** trop lourds pour une seule implémentation.
 - **`composite.py` de flood-monitoring :** il fabrique une composition colorée radar, pas une médiane.
@@ -140,8 +143,15 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 ### Décisions prises
 
 - Noyau de traitement en rioxarray ; eo-stac pour la recherche et le téléchargement.
+- eo-pipe retiré du pilote, contrairement à la consigne initiale : `rasterio.features` doit remplacer `SieveStep` et la polygonisation (non testé). Les limites restent documentées.
 - Zone : Nouvelle-Aquitaine et Pays de la Loire, année 2025.
-- Seuil de surface : 4 ha. Regroupement : moins de 2 km et 30 jours au plus.
+- Source des points : l'export EFFIS `hs_modis` 2025 déjà téléchargé, à copier dans `~/Documents/Projects/data/fire-monitoring` pour figer la version utilisée. VIIRS ne sera comparé que si les feux proches de 4 ha manquent.
+- Seuil de surface : 4 ha.
+- Regroupement : composantes connexes, moins de 2 km et 7 jours d'écart au plus, plus un filtre des détections répétées au même endroit (seuil à fixer d'après l'étape 1 du pilote).
+- Dates : `date_start` est le premier point et sert de date de l'événement. `last_detection` est le dernier point : c'est la dernière détection, pas la fin réelle du feu.
+- Image avant : recherche de `date_start − 60 j` à `date_start − 1 j`, les 3 dates les plus claires, en privilégiant les plus récentes.
+- Image après : recherche de `last_detection + 3 j` à `last_detection + 45 j`, les 3 premières dates claires. Sans image exploitable, l'événement prend l'état `no_clear_post`.
+- Masque forêt : BD Forêt V2 de l'IGN, sous réserve de vérifier sa disponibilité, sa couverture et sa licence.
 - Carte annuelle sans filtre de date.
 - `FireEvent` comme nom de l'unité du pipeline.
 
@@ -154,21 +164,20 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 
 ### À trancher
 
-1. **eo-pipe :** faut-il le retirer du pilote, contre la consigne initiale ? La revue le recommande, car seuls `plan_chunks` et peut-être `SieveStep` serviraient. `rasterio.features` les remplacerait (non testé).
-2. **Événement :** quelle durée et quelle emprise maximales, et quelle est la « date de l'événement » ?
-3. **Image après le feu :** première date claire ou courte médiane, quel délai maximal, quel taux de couverture ? Proposition : de +1 à +45 jours, 3 dates au plus, 80 % de pixels valides.
-4. **Filtres :** quelle marge autour des points (proposition : 750 m, points du même événement) et quelle règle de forêt ?
-5. **Seuil dNBR :** proposition de 0,27. Faut-il le faire varier selon le type de forêt ?
-6. **Fusion :** quelle règle de dédoublonnage, et quelle date garde un polygone fusionné ?
-7. **Catalogue :** Planetary Computer (utilisé par flood-monitoring) ou Earth Search ?
-8. **Masque forêt :** quelle source, quelles classes, quel millésime, quelle licence ?
-9. **Événements non évalués :** faut-il les afficher sur la carte ou seulement dans le rapport ? Le registre est-il publié ?
-10. **Limites d'année :** quelle année possède un feu à cheval sur deux années ? Les feux de janvier et de décembre demandent aussi des images de 2024 et 2026.
-11. **Stockage :** faut-il conserver les composites ? Le budget disque sera connu après l'étape 1.
-12. **Identifiant de publication :** les slugs ne sont jamais réutilisés. Un par année, ou un seul pour plusieurs années plus tard ?
+1. **Couverture de l'image après :** quel taux de pixels valides exiger ? Proposition : 80 %.
+2. **Filtres :** quelle marge autour des points (proposition : 750 m, points du même événement), quel seuil sur `confidence` et quelle règle de forêt ?
+3. **Seuil dNBR :** proposition de 0,27. Faut-il le faire varier selon le type de forêt ?
+4. **Fusion :** quelle règle de dédoublonnage, et quelle date garde un polygone fusionné ? Faut-il aussi arrêter la fenêtre « après » au début d'un événement voisin ?
+5. **Catalogue :** Planetary Computer (utilisé par flood-monitoring) ou Earth Search ?
+6. **Masque forêt :** quelles classes et quel millésime ?
+7. **Événements non évalués :** faut-il les afficher sur la carte ou seulement dans le rapport ? Le registre est-il publié ?
+8. **Limites d'année :** quelle année possède un feu à cheval sur deux années ? Les feux de janvier et de décembre demandent aussi des images de 2024 et 2026.
+9. **Stockage :** faut-il conserver les composites ? Le budget disque sera connu après l'étape 1.
+10. **Identifiant de publication :** les slugs ne sont jamais réutilisés. Un par année, ou un seul pour plusieurs années plus tard ?
 
 Questions d'implémentation à régler pendant la conception :
 
-- garder dask ou non (à décider après l'étape 1) ;
+- agrandir la zone quand une brûlure touche son bord ;
+- garder dask ou non : d'après les emprises mesurées (4 km au plus), il semble inutile par événement ; à confirmer après l'étape 1 ;
 - garder uniquement le NBR ou aussi d'autres bandes pour les futurs modèles (l'interface proposée reçoit les bandes) ;
 - choisir la liste des états d'un événement.
