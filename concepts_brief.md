@@ -119,7 +119,11 @@ Chaque point indique ce qui est réglé par les décisions prises et ce qui rest
 - *Problème :* si le filtre forêt passe en dernier, chaque brûlage agricole déclenche des téléchargements Sentinel-2.
 - *Réglé :* le tri des points par le masque forêt passe avant tout appel STAC. Il est fait une fois par run, sur la zone du pilote.
 - *Mesuré :* dans le Sud-Est, ce tri retire peu de points. Sur 576 points de la zone, 183 sont dans un polygone forêt, 531 (92 %) à moins de 500 m et 567 à moins de 1 km. Les deux sources fixes sont à 0 et 55 m d'une forêt. Le masque ne remplace donc pas le filtre des sources fixes : son rôle principal est le filtrage des polygones brûlés.
-- *Reste à trancher :* la marge autour des points. Un pixel MODIS mesure environ 1 km au nadir, plus en bord de fauchée, et la colonne `scan` du fichier donne sa taille réelle. La marge de 750 m proposée pour VIIRS est donc à revoir (décision 2).
+- *Marge (décidée) :* 1 km fixe autour de chaque point MODIS, pour les deux usages :
+  - garder un point si un polygone forêt est à moins de 1 km (567 points sur 576 dans la zone) ;
+  - rattacher un polygone brûlé à son événement s'il est à moins de 1 km d'un point de cet événement.
+- *Conséquence acceptée :* dans le Sud-Est, le tri ne réduit presque pas les téléchargements, et une brûlure sans lien avec le feu, à moins de 1 km, peut y être rattachée.
+- *Reste à trancher :* rien.
 
 **5. Identifiants et résultats périmés.**
 
@@ -217,6 +221,7 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 - Zone : polygone de `~/Documents/Projects/data/fire-monitoring/study_area/pilot_area_bbox.gpkg` (Sud-Est, 15 départements, partie française seulement), année 2025.
 - Source des points : l'export EFFIS `hs_modis` 2025, figé dans `~/Documents/Projects/data/fire-monitoring/MODIS/`. VIIRS ne sera comparé que si les feux proches de 4 ha manquent.
 - Seuil de surface : 4 ha.
+- Marge autour des points MODIS : 1 km fixe, pour le tri par la forêt et pour le rattachement des polygones.
 - Regroupement : composantes connexes, moins de 2 km et 7 jours d'écart au plus, après retrait des sources fixes : sites de 1 km avec plus de 4 détections étalées sur au moins 60 jours dans l'année.
 - Dates : `date_start` est le premier point et sert de date de l'événement. `last_detection` est le dernier point : c'est la dernière détection, pas la fin réelle du feu.
 - Image avant : recherche de `date_start − 60 j` à `date_start − 1 j`, les 3 dates les plus claires, en privilégiant les plus récentes.
@@ -235,7 +240,7 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 ### À trancher
 
 1. **Couverture de l'image après :** quel taux de pixels valides exiger ? Proposition : 80 %.
-2. **Filtres :** quelle marge autour des points MODIS (la proposition de 750 m venait de VIIRS et est à revoir), quel seuil sur `confidence` et quelle règle de forêt ?
+2. **Filtres :** quel seuil sur `confidence` et quelle règle de forêt pour les polygones ? La marge est décidée : 1 km.
 3. **Seuil dNBR :** proposition de 0,27. Faut-il le faire varier selon le type de forêt ?
 4. **Fusion :** quelle règle de dédoublonnage, et quelle date garde un polygone fusionné ? Faut-il aussi arrêter la fenêtre « après » au début d'un événement voisin ?
 5. **Catalogue :** Planetary Computer (utilisé par flood-monitoring) ou Earth Search ?
