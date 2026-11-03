@@ -88,10 +88,12 @@ Chaque point indique ce qui est réglé par les décisions prises et ce qui rest
   | 10 ou plus | 1 | 135 |
 
   Le site de Fos-sur-Mer (supposé) compte 91 jours sur 11 mois. Viennent ensuite un site à 8 jours sur 158 jours (43,63 N, 4,78 E) et un site à 4 jours sur 168 jours (43,58 N, 4,40 E). Les vrais feux restent groupés sur un même mois, comme le site de l'Aude avec 3 jours en 11 jours.
-- *Reste à trancher :*
-  - la règle des sources fixes ;
-  - une durée maximale d'événement, en garde-fou contre les chaînes restantes.
-- *Test d'une règle candidate :* retirer les sites de 1 km avec au moins 4 jours de détection étalés sur plus de 60 jours enlève 3 sites (149 points). Il reste alors 241 événements, dont 178 à un seul point. Le plus long dure 10 jours (3 points, vers 43,43 N, 5,24 E) et l'emprise maximale reste de 17,5 km (feu de l'Aude).
+- *Règle des sources fixes (décidée) :* on relie les points à moins de 1 km sur toute l'année. Un site qui compte plus de 4 détections étalées sur au moins 60 jours est une source fixe, et tous ses points sont retirés avant le regroupement. Sur 2025 :
+  - parmi les 7 sites de plus de 4 détections, les feux s'étalent sur 11 jours au plus, et les deux sources fixes sur 158 et 355 jours ;
+  - la règle retire Fos (supposé, 135 points) et le site de 43,62 N, 4,78 E (10 points) ;
+  - le site de 43,58 N, 4,40 E (4 détections sur 168 jours) reste. Il coûtera quelques téléchargements, sans fausser la carte si le dNBR n'y voit pas de brûlure.
+  - X = 60 jours laisse de la marge pour un feu qui repart plusieurs semaines plus tard. L'échantillon est petit (2 sources fixes, 5 feux) : la règle est à revoir sur d'autres années ou zones.
+- *Reste à trancher :* rien. Aucune durée maximale d'événement n'est ajoutée : une fois les sources fixes retirées, l'écart de 7 jours suffit sur 2025.
 
 **2. Événements sans résultat.**
 
@@ -116,6 +118,7 @@ Chaque point indique ce qui est réglé par les décisions prises et ce qui rest
 
 - *Problème :* si le filtre forêt passe en dernier, chaque brûlage agricole déclenche des téléchargements Sentinel-2.
 - *Réglé :* le tri des points par le masque forêt passe avant tout appel STAC. Il est fait une fois par run, sur la zone du pilote.
+- *Mesuré :* dans le Sud-Est, ce tri retire peu de points. Sur 576 points de la zone, 183 sont dans un polygone forêt, 531 (92 %) à moins de 500 m et 567 à moins de 1 km. Les deux sources fixes sont à 0 et 55 m d'une forêt. Le masque ne remplace donc pas le filtre des sources fixes : son rôle principal est le filtrage des polygones brûlés.
 - *Reste à trancher :* la marge autour des points. Un pixel MODIS mesure environ 1 km au nadir, plus en bord de fauchée, et la colonne `scan` du fichier donne sa taille réelle. La marge de 750 m proposée pour VIIRS est donc à revoir (décision 2).
 
 **5. Identifiants et résultats périmés.**
@@ -214,7 +217,7 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 - Zone : polygone de `~/Documents/Projects/data/fire-monitoring/study_area/pilot_area_bbox.gpkg` (Sud-Est, 15 départements, partie française seulement), année 2025.
 - Source des points : l'export EFFIS `hs_modis` 2025, figé dans `~/Documents/Projects/data/fire-monitoring/MODIS/`. VIIRS ne sera comparé que si les feux proches de 4 ha manquent.
 - Seuil de surface : 4 ha.
-- Regroupement : composantes connexes, moins de 2 km et 7 jours d'écart au plus, plus un filtre des détections répétées au même endroit (seuil à fixer d'après l'étape 1 du pilote).
+- Regroupement : composantes connexes, moins de 2 km et 7 jours d'écart au plus, après retrait des sources fixes : sites de 1 km avec plus de 4 détections étalées sur au moins 60 jours dans l'année.
 - Dates : `date_start` est le premier point et sert de date de l'événement. `last_detection` est le dernier point : c'est la dernière détection, pas la fin réelle du feu.
 - Image avant : recherche de `date_start − 60 j` à `date_start − 1 j`, les 3 dates les plus claires, en privilégiant les plus récentes.
 - Image après : recherche de `last_detection + 3 j` à `last_detection + 45 j`, les 3 premières dates claires. Sans image exploitable, l'événement prend l'état `no_clear_post`.
