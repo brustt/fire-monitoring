@@ -1,7 +1,7 @@
 # Cartographie des surfaces brûlées en forêt : pilote 2025
 
 * **Auteur :** brustt
-* **Date :** 2026-11-02
+* **Date :** 2026-11-03
 * **État :** brouillon après une première revue multi-angles ; les décisions de la section « À trancher » restent ouvertes.
 
 ## Vue d'ensemble
@@ -10,8 +10,8 @@ Le projet produit une carte annuelle des surfaces forestières brûlées, publi�
 
 Le fonctionnement prévu :
 
-1. Récupérer les points chauds FIRMS de l'année sur la zone.
-2. Écarter les points qui ne sont pas près d'une forêt.
+1. Lire les points chauds MODIS de l'année (export EFFIS `hs_modis`) et garder ceux qui touchent la zone, sur le territoire français.
+2. Retirer les sources fixes, puis écarter les points qui ne sont pas près d'une forêt.
 3. Regrouper les points restants en événements de feu (`FireEvent`).
 4. Pour chaque événement, construire une image Sentinel-2 avant le feu et une image après le feu, sans nuages, sur une même grille.
 5. Calculer la zone brûlée avec un modèle remplaçable, d'abord un dNBR (différence de NBR entre avant et après).
@@ -22,7 +22,7 @@ Le pilote prouve que la chaîne fonctionne. Il ne prouve pas que les surfaces so
 
 ## Analyse
 
-Rien n'a été exécuté pendant cette revue. « Vérifié » signifie qu'un relecteur a lu le code ; « déduit » signifie que le point est un raisonnement non testé. Les faits sur FIRMS, les catalogues STAC, l'IGN et tippecanoe n'ont pas pu être vérifiés. Les chiffres proposés sont des points de départ, pas des valeurs validées.
+Rien n'a été exécuté pendant cette revue. « Vérifié » signifie qu'un relecteur a lu le code ; « déduit » signifie que le point est un raisonnement non testé. Les faits sur les catalogues STAC, l'IGN et tippecanoe n'ont pas pu être vérifiés. Les chiffres proposés sont des points de départ, pas des valeurs validées.
 
 Les librairies ne bloquent pas le projet. Les problèmes les plus graves sont dans les définitions du concept et dans la gestion des échecs.
 
@@ -68,25 +68,68 @@ Fichier figé dans `~/Documents/Projects/data/fire-monitoring/MODIS/`. Regroupem
 
 ### Problèmes bloquants
 
-**1. L'événement n'est pas défini (déduit).** Avec une règle de voisinage en chaîne (moins de 2 km, moins de 30 jours), une source fixe comme un site industriel ou une longue saison de feux peut former un seul événement de plusieurs mois, sur une très grande emprise. Une partie de la brûlure tomberait alors dans l'image « avant ». Par ailleurs, « une date après le feu » contredit « médiane temporelle ». Il faut :
+Chaque point indique ce qui est réglé par les décisions prises et ce qui reste à trancher.
 
-- un regroupement qui ne dépend pas de l'ordre des points (composantes connexes) ;
-- le retrait des sources fixes connues de FIRMS ;
-- une durée et une emprise maximales ;
-- des fenêtres avant et après calculées depuis le premier et le dernier point ;
-- une définition explicite de la « date de l'événement ».
+**1. Définition de l'événement.**
 
-**2. Un événement sans image claire ressemble à un événement sans brûlure (déduit ; les échecs de téléchargement ne produisent qu'un avertissement, vérifié dans `eo-stac/src/eo_stac/download.py:209-213`).** Chaque événement doit finir avec un état et une raison, y compris s'il ne produit aucun polygone. Il faut un registre avec une ligne par événement : état, raison, nombre de scènes, part de pixels clairs, dates, polygones restants après chaque filtre, empreinte des paramètres. Il faut aussi comparer les fichiers demandés et reçus, comme dans `flood-monitoring/src/flood_monitoring/download.py:47-53`.
+- *Problème :* une règle de voisinage en chaîne peut former un événement de plusieurs mois, si bien qu'une partie de la brûlure tombe dans l'image « avant ».
+- *Réglé :*
+  - regroupement par composantes connexes, qui ne dépend pas de l'ordre des points, à moins de 2 km et 7 jours d'écart au plus ;
+  - `date_start` (premier point) sert de date de l'événement, et `last_detection` est le dernier point ;
+  - les fenêtres avant et après sont calculées depuis ces deux dates ;
+  - chaque image est un composite des 3 dates claires retenues : il n'y a plus de contradiction entre « une date » et « médiane ».
+- *Mesuré :* l'export EFFIS n'a pas de champ de type de source, donc les sources fixes ne peuvent être repérées que par leurs détections répétées. En reliant les points à moins de 1 km sur toute l'année, on obtient 308 sites dans la zone :
 
-**3. La fusion annuelle peut compter deux fois la même brûlure (déduit).** Deux événements dont les emprises se recouvrent peuvent produire le même polygone. En outre, `merge_vector` ignore les fichiers illisibles et applique le CRS du premier fichier à tous les autres (vérifié, `eo-pipe/src/eo_pipe/steps/vector/merge.py:59-66`). Il faut écrire en EPSG:2154, lire avec `read_parquet` en échouant sur tout fichier illisible, et fixer une règle de dédoublonnage.
+  | Jours distincts de détection | Sites | Points |
+  |---|---|---|
+  | 2 ou plus | 48 | 287 |
+  | 3 ou plus | 8 | 175 |
+  | 4 ou plus | 3 | 149 |
+  | 10 ou plus | 1 | 135 |
 
-**4. Le filtre forêt arrive trop tard (déduit).** S'il n'est appliqué qu'à la fin, chaque brûlage agricole déclenche des téléchargements Sentinel-2, pour un nombre d'événements encore inconnu. Le masque forêt doit être préparé en premier et servir à trier les points avant tout appel STAC, avec une marge couvrant l'erreur de position des points.
+  Le site de Fos-sur-Mer (supposé) compte 91 jours sur 11 mois. Viennent ensuite un site à 8 jours sur 158 jours (43,63 N, 4,78 E) et un site à 4 jours sur 168 jours (43,58 N, 4,40 E). Les vrais feux restent groupés sur un même mois, comme le site de l'Aude avec 3 jours en 11 jours.
+- *Reste à trancher :*
+  - la règle des sources fixes ;
+  - une durée maximale d'événement, en garde-fou contre les chaînes restantes.
+- *Test d'une règle candidate :* retirer les sites de 1 km avec au moins 4 jours de détection étalés sur plus de 60 jours enlève 3 sites (149 points). Il reste alors 241 événements, dont 178 à un seul point. Le plus long dure 10 jours (3 points, vers 43,43 N, 5,24 E) et l'emprise maximale reste de 17,5 km (feu de l'Aude).
 
-**5. Les identifiants d'événement sont instables et les anciens résultats ne sont jamais invalidés (déduit ; le même défaut est documenté dans `flood-monitoring/README.md:46`).** Il faut figer une copie des données FIRMS, calculer `event_id` comme une empreinte des points triés, et enregistrer une empreinte des paramètres.
+**2. Événements sans résultat.**
+
+- *Problème :* un événement sans image claire ressemble à un événement sans brûlure. Les échecs de téléchargement ne produisent qu'un avertissement (vérifié, `eo-stac/src/eo_stac/download.py:209-213`).
+- *Réglé :*
+  - un registre `events.parquet`, avec une ligne par événement, y compris quand il ne produit aucun polygone ;
+  - il contient l'état, la raison, le nombre de scènes, la part de pixels clairs, les dates, les polygones restants après chaque filtre et l'empreinte des paramètres ;
+  - les fichiers demandés et reçus sont comparés, comme dans `flood-monitoring/src/flood_monitoring/download.py:47-53` ;
+  - un événement en échec est enregistré, le run continue, puis se termine avec un code d'erreur.
+- *Reste à trancher :* la liste des états, choix d'implémentation fait dans le Technical Plan, et le taux de pixels clairs exigé (décision 1).
+
+**3. Doublons dans la fusion annuelle.**
+
+- *Problème :* deux événements voisins dans le temps peuvent produire le même polygone. C'est le cas d'un feu qui reprend au même endroit plus de 7 jours après : l'image « après » du premier événement contient la brûlure du second.
+- *Réglé :*
+  - la fusion n'utilise pas `merge_vector` (vérifié, `eo-pipe/src/eo_pipe/steps/vector/merge.py:59-66`) ;
+  - lecture avec `read_parquet`, avec échec sur tout fichier illisible ;
+  - tous les polygones sont écrits en EPSG:2154.
+- *Reste à trancher :* la règle de dédoublonnage et la date que garde un polygone fusionné (décision 4).
+
+**4. Ordre des filtres.**
+
+- *Problème :* si le filtre forêt passe en dernier, chaque brûlage agricole déclenche des téléchargements Sentinel-2.
+- *Réglé :* le tri des points par le masque forêt passe avant tout appel STAC. Il est fait une fois par run, sur la zone du pilote.
+- *Reste à trancher :* la marge autour des points. Un pixel MODIS mesure environ 1 km au nadir, plus en bord de fauchée, et la colonne `scan` du fichier donne sa taille réelle. La marge de 750 m proposée pour VIIRS est donc à revoir (décision 2).
+
+**5. Identifiants et résultats périmés.**
+
+- *Problème :* des identifiants instables et des résultats jamais invalidés, défaut déjà documenté dans `flood-monitoring/README.md:46`.
+- *Réglé :*
+  - les points sont figés dans `~/Documents/Projects/data/fire-monitoring/MODIS/` ;
+  - `event_id` est une empreinte des clés triées de ses points ;
+  - chaque événement enregistre une empreinte des paramètres, et un résultat dont l'empreinte diffère est recalculé.
+- *Reste à trancher :* rien.
 
 ### Problèmes majeurs
 
-- **Filtres mal définis (déduit).** « Relié à un point FIRMS » ne peut pas vouloir dire « point dans le polygone » : un pixel VIIRS couvre environ 14 ha au nadir, pour un seuil de 4 ha. Il faut une marge autour du point. « En forêt » a aussi besoin d'une règle, car découper avant ou après le test de 4 ha change le résultat. Solution proposée : créer les polygones une seule fois, les annoter (`area_ha`, `forest_ratio`, `hotspot_connected`), puis filtrer par requête. Cette table servira aussi au module EFFIS.
+- **Filtres mal définis (déduit).** « Relié à un point MODIS » ne peut pas vouloir dire « point dans le polygone » : un pixel MODIS couvre environ 100 ha au nadir, et plus en bord de fauchée, pour un seuil de 4 ha. Il faut une marge autour du point. « En forêt » a aussi besoin d'une règle, car découper avant ou après le test de 4 ha change le résultat. Solution proposée : créer les polygones une seule fois, les annoter (`area_ha`, `forest_ratio`, `hotspot_connected`), puis filtrer par requête. Cette table servira aussi au module EFFIS.
 - **Coupes rases et écobuages (déduit).** Un brûlage de rémanents sur une coupe rase, ou un écobuage en lisière, peut passer les deux filtres. Ce faux positif restera possible dans le pilote.
 - **Végétation méditerranéenne (déduit).** Dans le Sud-Est, beaucoup de feux brûlent de la garrigue ou du maquis. Le masque ne garde que la classe `Forêt` : la carte ne montrera que la part forestière de ces feux, et la description publiée doit le dire. Le seuil dNBR de 0,27 a été proposé sans tenir compte de ces milieux.
 - **Filtre nuages au mauvais niveau (filtre vérifié dans `eo-stac/src/eo_stac/params.py:45-49`, effet déduit).** Le pourcentage de nuages d'une scène dit peu de chose sur une petite zone. Il faut un filtre large, puis télécharger la SCL, mesurer la part de pixels clairs sur la zone, et ne télécharger les bandes que pour les dates utiles.
@@ -100,7 +143,7 @@ Fichier figé dans `~/Documents/Projects/data/fire-monitoring/MODIS/`. Regroupem
   - Un clic n'affiche que les propriétés des tuiles (`brustt-platform/docs/spec-v2.md:111`) : elles doivent donc porter l'identifiant, la date et la méthode.
   - tippecanoe pourrait faire disparaître les polygones de 4 ha aux zooms régionaux (déduit).
 - **Conflit de vocabulaire (vérifié, `platform-publish/docs/manifests.md:39-44`).** « Event » existe déjà côté Platform. L'unité du pipeline s'appelle donc `FireEvent`.
-- **Une carte qui peut tromper (déduit).** Elle montrera les feux de forêt détectés par FIRMS, sans validation, et non toutes les surfaces brûlées. La description publiée doit le dire. Il faut aussi contrôler à la main environ 20 polygones et les feux connus de 2025 avant publication.
+- **Une carte qui peut tromper (déduit).** Elle montrera les feux de forêt détectés par MODIS, sans validation, et non toutes les surfaces brûlées. La description publiée doit le dire. Il faut aussi contrôler à la main environ 20 polygones et les feux connus de 2025 avant publication.
 
 ### Limites des librairies
 
@@ -181,7 +224,7 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 
 ### Déroulé du pilote
 
-1. Sans télécharger de Sentinel-2, passer FIRMS, le filtre forêt et le regroupement sur toute la zone. Mesurer le nombre d'événements, leur durée et leur emprise, puis décider de continuer ou non selon le budget disque et temps.
+1. Sans télécharger de Sentinel-2, passer les points MODIS, le filtre des sources fixes, le filtre forêt et le regroupement sur toute la zone. Mesurer le nombre d'événements, leur durée et leur emprise, puis décider de continuer ou non selon le budget disque et temps.
 2. Traiter de bout en bout cinq événements choisis : un grand feu, un feu proche de 4 ha, une coupe rase avec point chaud, un cas nuageux, un cas proche de 6 °E (limite des fuseaux UTM). Ajouter une source fixe répétée, comme celle de Fos-sur-Mer, pour tester son filtre.
 3. Publier sous un identifiant temporaire, mesurer temps, volume et échecs par événement, contrôler à la main.
 4. Lancer ensuite toute la zone du pilote, un événement à la fois.
@@ -189,7 +232,7 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 ### À trancher
 
 1. **Couverture de l'image après :** quel taux de pixels valides exiger ? Proposition : 80 %.
-2. **Filtres :** quelle marge autour des points (proposition : 750 m, points du même événement), quel seuil sur `confidence` et quelle règle de forêt ?
+2. **Filtres :** quelle marge autour des points MODIS (la proposition de 750 m venait de VIIRS et est à revoir), quel seuil sur `confidence` et quelle règle de forêt ?
 3. **Seuil dNBR :** proposition de 0,27. Faut-il le faire varier selon le type de forêt ?
 4. **Fusion :** quelle règle de dédoublonnage, et quelle date garde un polygone fusionné ? Faut-il aussi arrêter la fenêtre « après » au début d'un événement voisin ?
 5. **Catalogue :** Planetary Computer (utilisé par flood-monitoring) ou Earth Search ?
