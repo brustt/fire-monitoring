@@ -191,6 +191,11 @@ Chaque point indique ce qui est réglé par les décisions prises et ce qui rest
   - Il faut platform-publish v0.2.2 (`platform-publish/CHANGELOG.md:7`).
   - Un clic n'affiche que les propriétés des tuiles (`brustt-platform/docs/spec-v2.md:111`) : elles doivent donc porter l'identifiant, la date et la méthode.
   - tippecanoe pourrait faire disparaître les polygones de 4 ha aux zooms régionaux (déduit).
+  - Une carte `single-map` n'a ni fenêtre d'événement, ni frise, ni Compare, mais les dates de chaque couche restent affichées (`brustt-platform/docs/spec-v2.md:97`).
+  - `brustt:dates` est défini dans le contrat v2 (`spec-v2.md:176`) et lu par l'application, mais platform-publish v0.2.2 ne l'écrit pas encore : les dates restent en colonnes.
+  - Les formes de données C et D, avec curseur temporel, sont réservées pour plus tard (`spec-v2.md:106`) ; les statistiques sont hors du périmètre de v2 (`spec-v2.md:21`), d'où les totaux dans la description.
+  - Le clic montre les propriétés de l'entité vecteur visible la plus haute (`spec-v2.md:111`) : la couche « Zones non évaluées », masquée par défaut, ne gêne pas le clic sur les brûlures.
+  - Un slug de projet ne peut pas valoir `about`, `assets` ou `healthz` (`spec-v1.md:156`).
 - **Conflit de vocabulaire (vérifié, `platform-publish/docs/manifests.md:39-44`).** « Event » existe déjà côté Platform. L'unité du pipeline s'appelle donc `FireEvent`.
 - **Une carte qui peut tromper (déduit).** Elle montrera les feux de forêt détectés par MODIS, sans validation, et non toutes les surfaces brûlées. La description publiée doit le dire. Il faut aussi contrôler à la main environ 20 polygones et les feux connus de 2025 avant publication.
 
@@ -280,6 +285,7 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 - Dédoublonnage à la fusion annuelle : les polygones d'un événement voisin B, qui commence pendant la fenêtre « après » de A à moins de 2 km, sont soustraits de ceux de A ; le seuil de 4 ha est réappliqué ; si B est en échec, A garde la surface et le registre note `overlaps_failed_neighbor`.
 - Limites d'année : un événement appartient à l'année de son `date_start`. Les fenêtres avant et après peuvent déborder sur l'année précédente ou suivante, sans coupure. Sur 2025 : le premier point date du 10 janvier, donc aucun événement ne prolonge un feu de 2024 ; 13 événements ont une fenêtre avant qui remonte en 2024 et 3 une fenêtre après qui va en 2026, et `sentinel-2-c1-l2a` couvre ces périodes (866 scènes sur la zone en novembre-décembre 2024, 587 du 1er janvier au 15 février 2026). Un événement dont le `last_detection` tombe à moins de 7 jours du 31 décembre est traité normalement mais signalé `truncated_year_end` dans le registre : son image après risque d'être trop précoce, car l'export 2025 ne montre pas sa suite. En 2025, c'est un seul événement (1 point le 31 décembre), qui ne justifie pas un export EFFIS de janvier 2026. Plus tard, pour plusieurs années : lire les points de l'année suivante jusqu'à 7 jours après le 31 décembre, écarter les événements dont le `date_start` tombe dans cette marge, et garder le signalement pour un feu qui s'enchaîne au-delà.
 - Carte annuelle sans filtre de date.
+- Identifiants de publication : projet `fire-monitoring` ; un Event `single-map` par année et par zone, `sud-est-2025` pour le pilote, avec `start: 2025-01-01` et `end: 2025-12-31`. Les années suivantes donneront `sud-est-2026`, puis `france-<année>` pour la France entière. `/fire-monitoring` ouvre l'Event le plus récent (`spec-v2.md:79`). Couches : `burned-forest` (rôle `result`) et `not-assessed` (rôle `auxiliary`). Un seul slug pour plusieurs années est écarté : sans filtre de date ni style selon les données, les brûlures des différentes années seraient indiscernables sur une même carte ; les formes C et D de la Platform pourront plus tard regrouper les années. Republier un Event écrase ses fichiers, sans version (`spec-v1.md:98`) ; un slug retiré par `withdraw` n'est pas réutilisé pour un autre contenu.
 - Événements non évalués : publiés dans une seconde couche vecteur, « Zones non évaluées », masquée par défaut (`shown: false`), de rôle `auxiliary` avec la licence et l'attribution du projet. Un polygone par événement non évalué, sur son emprise (enveloppe des points + 1 km), avec un style fixe distinct des brûlures (contour gris, remplissage léger), car la Platform n'a pas de style selon les données (`platform-publish/docs/manifests.md:91`). Propriétés affichées au clic : `event_id`, état (`no_clear_post`, erreur de lecture…), raison, `date_start` et `last_detection`. Le registre complet `events.parquet` n'est pas publié pour le pilote : le GeoParquet de cette couche, téléchargeable depuis le panneau des couches (`brustt-platform/docs/spec-v2.md:84`), suffit au lecteur. La description publiée donne les totaux, par exemple « 243 événements MODIS, 242 évalués, 1 non évalué (pas d'image claire) ». En 2025, environ 1 événement sur 243 est attendu en `no_clear_post` ; le nombre d'erreurs de lecture ne sera connu qu'au premier run.
 - `FireEvent` comme nom de l'unité du pipeline.
 
@@ -287,7 +293,7 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 
 1. Sans lire de Sentinel-2, passer les points MODIS, le filtre des sources fixes, le filtre forêt et le regroupement sur toute la zone. Mesurer le nombre d'événements, leur durée et leur emprise, puis décider de continuer ou non selon le budget de temps et le volume à lire.
 2. Traiter de bout en bout cinq événements choisis : un grand feu, un feu proche de 4 ha, une coupe rase avec point chaud, un cas nuageux, un cas proche de 6 °E (limite des fuseaux UTM). Ajouter une source fixe répétée, comme celle de Fos-sur-Mer, pour tester son filtre.
-3. Publier sous un identifiant temporaire, mesurer temps, volume et échecs par événement, contrôler à la main.
+3. Publier sur la pile de développement locale (`platform-publish push --root-url http://data.brustt.localhost --profile brustt-local`, `platform-publish/docs/publish.md:198`), mesurer temps, volume et échecs par événement, contrôler à la main. Le slug `sud-est-2025` n'est utilisé qu'une fois, en production ; les runs suivants écrasent le même Event.
 4. Lancer ensuite toute la zone du pilote, un événement à la fois.
 
 ### À trancher
@@ -301,7 +307,7 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 7. **Événements non évalués :** décidé, seconde couche « Zones non évaluées » masquée par défaut, registre complet non publié (voir « Décisions prises »).
 8. **Limites d'année :** décidé, l'année du `date_start` (voir « Décisions prises »).
 9. **Stockage :** décidé, seuls les polygones sont conservés (voir « Décisions prises »).
-10. **Identifiant de publication :** les slugs ne sont jamais réutilisés. Un par année, ou un seul pour plusieurs années plus tard ?
+10. **Identifiant de publication :** décidé, projet `fire-monitoring` et un Event par année et par zone, `sud-est-2025` (voir « Décisions prises »).
 
 Questions d'implémentation à régler pendant la conception :
 
