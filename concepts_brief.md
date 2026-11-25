@@ -150,7 +150,18 @@ Chaque point indique ce qui est réglé par les décisions prises et ce qui rest
 
 ### Problèmes majeurs
 
-- **Filtres mal définis (déduit).** « Relié à un point MODIS » ne peut pas vouloir dire « point dans le polygone » : un pixel MODIS couvre environ 100 ha au nadir, et plus en bord de fauchée, pour un seuil de 4 ha. Il faut une marge autour du point. « En forêt » a aussi besoin d'une règle, car découper avant ou après le test de 4 ha change le résultat. Solution proposée : créer les polygones une seule fois, les annoter (`area_ha`, `forest_ratio`, `hotspot_connected`), puis filtrer par requête. Cette table servira aussi au module EFFIS.
+- **Filtres mal définis (déduit).** « Relié à un point MODIS » ne peut pas vouloir dire « point dans le polygone » : un pixel MODIS couvre environ 100 ha au nadir, et plus en bord de fauchée, pour un seuil de 4 ha. Il faut une marge autour du point. « En forêt » a aussi besoin d'une règle, car découper avant ou après le test de 4 ha change le résultat. Solution retenue : créer les polygones une seule fois, les annoter (`area_burned_ha`, `area_ha`, `forest_ratio`, `hotspot_connected`, `conf_max`), puis filtrer par requête. Cette table servira aussi au module EFFIS. La marge (1 km), la règle de forêt et le seuil de `confidence` sont décidés (voir « Décisions prises »).
+- **Seuil de `confidence` (mesuré).** Sur les 432 points 2025 restants après retrait des sources fixes (243 événements, dont 179 d'un seul point), la confiance a une médiane de 66 (quartiles 53 et 85). Les sources fixes retirées ont une médiane de 51 : la confiance ne les aurait pas séparées des feux. Les grands feux, dont l'Aude, atteignent 100. Effet d'un seuil, appliqué aux points puis regroupement, ou au maximum de l'événement (résultats presque identiques) :
+
+  | Seuil | Événements (seuil sur les points) | Événements (seuil sur le maximum) | Dont un seul point |
+  |---|---|---|---|
+  | 0 | 243 | 243 | 179 |
+  | 30 | 235 | 235 | 171 |
+  | 50 | 196 | 195 | 133 |
+  | 70 | 79 | 78 | 36 |
+  | 80 | 33 | 33 | 9 |
+
+  Au-delà de 30, les événements disparaissent vite, surtout des points isolés entre 50 et 69 (97 événements), sans rien qui prouve qu'ils sont faux. Un seuil haut priverait surtout la carte des petits feux ; le dNBR reste le vrai filtre.
 - **Coupes rases et écobuages (déduit).** Un brûlage de rémanents sur une coupe rase, ou un écobuage en lisière, peut passer les deux filtres. Ce faux positif restera possible dans le pilote.
 - **Végétation méditerranéenne (déduit).** Dans le Sud-Est, beaucoup de feux brûlent de la garrigue ou du maquis. Le masque ne garde que la classe `Forêt` : la carte ne montrera que la part forestière de ces feux, et la description publiée doit le dire. Le seuil dNBR de 0,27 a été proposé sans tenir compte de ces milieux.
 - **Filtre nuages au bon niveau (déduit).** Le pourcentage de nuages d'une scène (`eo:cloud_cover`) dit peu de chose sur une petite zone. Il faut un filtre large dans la recherche rustac, puis lire la SCL seule sur l'emprise de l'événement, mesurer la part de pixels clairs, et ne lire B8A et B12 que pour les dates retenues.
@@ -258,6 +269,8 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 - Zone : polygone de `~/Documents/Projects/data/fire-monitoring/study_area/pilot_area_bbox.gpkg` (Sud-Est, 15 départements, partie française seulement), année 2025.
 - Source des points : l'export EFFIS `hs_modis` 2025, figé dans `~/Documents/Projects/data/fire-monitoring/MODIS/`. VIIRS ne sera comparé que si les feux proches de 4 ha manquent.
 - Seuil de surface : 4 ha.
+- Seuil de `confidence` : un événement est gardé si sa confiance maximale vaut au moins 30, la limite de la classe « basse » de MODIS (8 événements d'un seul point retirés en 2025). Le test porte sur l'événement et non sur chaque point : les points peu confiants d'un vrai feu comptent dans ses dates et son emprise. Le registre note `conf_max`, que les polygones héritent, pour pouvoir durcir le seuil plus tard par requête.
+- Règle de forêt des polygones : chaque polygone brûlé est découpé par le masque forêt, puis le seuil de 4 ha s'applique à la partie découpée. Les attributs gardent la brûlure entière : `area_burned_ha` (avant découpe), `area_ha` (partie forestière) et `forest_ratio`. Conséquence acceptée : un feu de 10 ha dont 3 ha de forêt disparaît de la carte, mais reste dans la table des polygones.
 - Marge autour des points MODIS : 1 km fixe, pour le tri par la forêt et pour le rattachement des polygones.
 - Regroupement : composantes connexes, moins de 2 km et 7 jours d'écart au plus, après retrait des sources fixes : sites de 1 km avec plus de 4 détections étalées sur au moins 60 jours dans l'année.
 - Dates : `date_start` est le premier point et sert de date de l'événement. `last_detection` est le dernier point : c'est la dernière détection, pas la fin réelle du feu.
@@ -279,7 +292,7 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 ### À trancher
 
 1. **Couverture de l'image après :** décidée, 80 % de l'emprise claire par date, 1 à 3 dates (voir « Décisions prises »).
-2. **Filtres :** quel seuil sur `confidence` et quelle règle de forêt pour les polygones ? La marge est décidée : 1 km.
+2. **Filtres :** décidés, confiance maximale d'au moins 30 et découpe par le masque forêt avant le seuil de 4 ha (voir « Décisions prises »).
 3. **Seuil dNBR :** proposition de 0,27. Faut-il le faire varier selon le type de forêt ?
 4. **Fusion :** décidée, voir le problème bloquant 3 et « Décisions prises ».
 5. **Catalogue :** décidé, Earth Search, collection `sentinel-2-c1-l2a` (voir « Décisions prises »).
