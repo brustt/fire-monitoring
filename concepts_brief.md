@@ -13,8 +13,8 @@ Le fonctionnement prévu :
 1. Lire les points chauds MODIS de l'année (export EFFIS `hs_modis`) et garder ceux qui touchent la zone, sur le territoire français.
 2. Retirer les sources fixes, puis écarter les points qui ne sont pas près d'une forêt.
 3. Regrouper les points restants en événements de feu (`FireEvent`).
-4. Pour chaque événement, construire une image Sentinel-2 avant le feu et une image après le feu, sans nuages, sur une même grille.
-5. Calculer la zone brûlée avec un modèle remplaçable, d'abord un dNBR (différence de NBR entre avant et après).
+4. Pour chaque événement, construire une image Sentinel-2 avant le feu et une image après le feu, sans nuages, sur une même grille, en lisant à la demande les COG du catalogue STAC, sans télécharger les scènes.
+5. Calculer la zone brûlée avec un modèle remplaçable, d'abord un dNBR (différence de NBR entre avant et après). Les bandes, les NBR, les composites et le dNBR restent en mémoire : aucun raster n'est enregistré.
 6. Transformer le résultat en polygones, les annoter, et les enregistrer en GeoParquet avec la date de l'événement.
 7. Reconstruire le fichier annuel, générer les PMTiles et publier avec platform-publish.
 
@@ -91,17 +91,17 @@ Chaque point indique ce qui est réglé par les décisions prises et ce qui rest
 - *Règle des sources fixes (décidée) :* on relie les points à moins de 1 km sur toute l'année. Un site qui compte plus de 4 détections étalées sur au moins 60 jours est une source fixe, et tous ses points sont retirés avant le regroupement. Sur 2025 :
   - parmi les 7 sites de plus de 4 détections, les feux s'étalent sur 11 jours au plus, et les deux sources fixes sur 158 et 355 jours ;
   - la règle retire Fos (supposé, 135 points) et le site de 43,62 N, 4,78 E (10 points) ;
-  - le site de 43,58 N, 4,40 E (4 détections sur 168 jours) reste. Il coûtera quelques téléchargements, sans fausser la carte si le dNBR n'y voit pas de brûlure.
+  - le site de 43,58 N, 4,40 E (4 détections sur 168 jours) reste. Il coûtera quelques lectures Sentinel-2, sans fausser la carte si le dNBR n'y voit pas de brûlure.
   - X = 60 jours laisse de la marge pour un feu qui repart plusieurs semaines plus tard. L'échantillon est petit (2 sources fixes, 5 feux) : la règle est à revoir sur d'autres années ou zones.
 - *Reste à trancher :* rien. Aucune durée maximale d'événement n'est ajoutée : une fois les sources fixes retirées, l'écart de 7 jours suffit sur 2025.
 
 **2. Événements sans résultat.**
 
-- *Problème :* un événement sans image claire ressemble à un événement sans brûlure. Les échecs de téléchargement ne produisent qu'un avertissement (vérifié, `eo-stac/src/eo_stac/download.py:209-213`).
+- *Problème :* un événement sans image claire ressemble à un événement sans brûlure. Une lecture distante qui échoue (réseau, catalogue) ne doit pas non plus passer pour une absence de brûlure.
 - *Réglé :*
   - un registre `events.parquet`, avec une ligne par événement, y compris quand il ne produit aucun polygone ;
   - il contient l'état, la raison, le nombre de scènes, la part de pixels clairs, les dates, les polygones restants après chaque filtre et l'empreinte des paramètres ;
-  - les fichiers demandés et reçus sont comparés, comme dans `flood-monitoring/src/flood_monitoring/download.py:47-53` ;
+  - les dates retenues et les dates effectivement lues sont comparées ; une erreur de lecture, après les nouveaux essais de GDAL (`GDAL_HTTP_MAX_RETRY`, à régler), met l'événement en échec avec un état distinct de `no_clear_post` ;
   - un événement en échec est enregistré, le run continue, puis se termine avec un code d'erreur.
 - *Reste à trancher :* la liste des états, choix d'implémentation fait dans le Technical Plan, et le taux de pixels clairs exigé (décision 1).
 
@@ -112,17 +112,31 @@ Chaque point indique ce qui est réglé par les décisions prises et ce qui rest
   - la fusion n'utilise pas `merge_vector` (vérifié, `eo-pipe/src/eo_pipe/steps/vector/merge.py:59-66`) ;
   - lecture avec `read_parquet`, avec échec sur tout fichier illisible ;
   - tous les polygones sont écrits en EPSG:2154.
-- *Reste à trancher :* la règle de dédoublonnage et la date que garde un polygone fusionné (décision 4).
+- *Mesuré :* sur 2025, après retrait des sources fixes (577 points, dont 145 retirés, et 243 événements, sans filtre forêt), on compte les paires où un événement B commence dans la fenêtre « après » d'un événement A (`last_detection + 3 j` à `+ 45 j`) :
+
+  | Distance entre points | Paires | B moins de 10 j après A | Événements concernés |
+  |---|---|---|---|
+  | 1 km ou moins | 11 | 6 | 22 |
+  | 2 km ou moins | 13 | 6 | 25 |
+  | 5 km ou moins | 68 | 29 | 89 |
+
+  Environ 10 % des événements sont concernés à la marge de 1 km. Le feu de l'Aude en fait partie : un événement de 2 points le suit 9,7 jours plus tard, peut-être une reprise (non vérifié). Le doublon ne va que dans un sens : l'image « avant » de B montre déjà la brûlure de A, donc B ne la redétecte pas. Seule l'image « après » de A peut contenir la brûlure de B.
+- *Règle de dédoublonnage (décidée) :* à la fusion annuelle, les polygones de B sont soustraits de ceux de A.
+  - B est un voisin de A s'il commence après le `last_detection` de A et avant la dernière date de l'image « après » de A, avec des points à moins de 2 km de ceux de A.
+  - Chaque surface garde la date de l'événement dont les images avant et après l'encadrent au plus près, c'est-à-dire B. Rien n'est fusionné, donc aucun polygone n'a à choisir entre deux dates.
+  - Après la soustraction, le seuil de 4 ha est réappliqué aux polygones de A.
+  - Si B est en échec, A garde la surface sous sa propre date, et le registre le signale par `overlaps_failed_neighbor`.
+- *Reste à trancher :* rien.
 
 **4. Ordre des filtres.**
 
-- *Problème :* si le filtre forêt passe en dernier, chaque brûlage agricole déclenche des téléchargements Sentinel-2.
+- *Problème :* si le filtre forêt passe en dernier, chaque brûlage agricole déclenche des lectures Sentinel-2.
 - *Réglé :* le tri des points par le masque forêt passe avant tout appel STAC. Il est fait une fois par run, sur la zone du pilote.
 - *Mesuré :* dans le Sud-Est, ce tri retire peu de points. Sur 576 points de la zone, 183 sont dans un polygone forêt, 531 (92 %) à moins de 500 m et 567 à moins de 1 km. Les deux sources fixes sont à 0 et 55 m d'une forêt. Le masque ne remplace donc pas le filtre des sources fixes : son rôle principal est le filtrage des polygones brûlés.
 - *Marge (décidée) :* 1 km fixe autour de chaque point MODIS, pour les deux usages :
   - garder un point si un polygone forêt est à moins de 1 km (567 points sur 576 dans la zone) ;
   - rattacher un polygone brûlé à son événement s'il est à moins de 1 km d'un point de cet événement.
-- *Conséquence acceptée :* dans le Sud-Est, le tri ne réduit presque pas les téléchargements, et une brûlure sans lien avec le feu, à moins de 1 km, peut y être rattachée.
+- *Conséquence acceptée :* dans le Sud-Est, le tri ne réduit presque pas les lectures, et une brûlure sans lien avec le feu, à moins de 1 km, peut y être rattachée.
 - *Reste à trancher :* rien.
 
 **5. Identifiants et résultats périmés.**
@@ -139,10 +153,17 @@ Chaque point indique ce qui est réglé par les décisions prises et ce qui rest
 - **Filtres mal définis (déduit).** « Relié à un point MODIS » ne peut pas vouloir dire « point dans le polygone » : un pixel MODIS couvre environ 100 ha au nadir, et plus en bord de fauchée, pour un seuil de 4 ha. Il faut une marge autour du point. « En forêt » a aussi besoin d'une règle, car découper avant ou après le test de 4 ha change le résultat. Solution proposée : créer les polygones une seule fois, les annoter (`area_ha`, `forest_ratio`, `hotspot_connected`), puis filtrer par requête. Cette table servira aussi au module EFFIS.
 - **Coupes rases et écobuages (déduit).** Un brûlage de rémanents sur une coupe rase, ou un écobuage en lisière, peut passer les deux filtres. Ce faux positif restera possible dans le pilote.
 - **Végétation méditerranéenne (déduit).** Dans le Sud-Est, beaucoup de feux brûlent de la garrigue ou du maquis. Le masque ne garde que la classe `Forêt` : la carte ne montrera que la part forestière de ces feux, et la description publiée doit le dire. Le seuil dNBR de 0,27 a été proposé sans tenir compte de ces milieux.
-- **Filtre nuages au mauvais niveau (filtre vérifié dans `eo-stac/src/eo_stac/params.py:45-49`, effet déduit).** Le pourcentage de nuages d'une scène dit peu de chose sur une petite zone. Il faut un filtre large, puis télécharger la SCL, mesurer la part de pixels clairs sur la zone, et ne télécharger les bandes que pour les dates utiles.
+- **Filtre nuages au bon niveau (déduit).** Le pourcentage de nuages d'une scène (`eo:cloud_cover`) dit peu de chose sur une petite zone. Il faut un filtre large dans la recherche pystac-client, puis lire la SCL seule sur l'emprise de l'événement, mesurer la part de pixels clairs, et ne lire B8A et B12 que pour les dates retenues.
 - **La SCL peut effacer les brûlures (déduit).** Une brûlure récente peut être classée « sombre » (classe 2) ou « ombre » (classe 3). Le masque doit être testé sur un feu connu avant d'être figé.
-- **Grille commune à écrire (vérifié, `eo-stac/src/eo_stac/download.py:94-96,720-739`).** Les extraits gardent le CRS d'origine et ne sont jamais rééchantillonnés. La zone chevauche les fuseaux UTM 31 et 32 (limite à 6 °E) : vers cette longitude, le recouvrement des tuiles rendrait le mélange de CRS courant (déduit). Il faut assembler les doublons d'un même jour avant la médiane. `event_grid` et `warp` (`flood-monitoring/src/flood_monitoring/merge_stage.py:57,69`) sont réutilisables. Travailler à 20 m avec B8A, B12 et SCL évite de rééchantillonner les bandes ; 4 ha représentent alors 100 pixels (déduit).
-- **Offset de réflectance non géré (absence vérifiée par recherche dans `eo-stac`, effet déduit).** Un offset non retiré fausse le NBR, même sur la seule année 2025. Il faut contrôler un produit réel de chaque collection retenue et noter la règle.
+- **Grille commune (non testé).** La zone chevauche les fuseaux UTM 31 et 32 (limite à 6 °E) : vers cette longitude, des scènes d'un même jour arrivent dans deux CRS (déduit). Les scènes doivent être lues sur une grille imposée (CRS, résolution, emprise), et celles d'un même jour assemblées avant la médiane. Il reste à vérifier ce que lazycogs fait lui-même (reprojection, assemblage par jour) et ce qu'il faut écrire en xarray, sur un événement proche de 6 °E. `event_grid` (`flood-monitoring/src/flood_monitoring/merge_stage.py:57`) peut servir à définir l'emprise. Travailler à 20 m avec B8A, B12 et SCL évite de rééchantillonner les bandes ; 4 ha représentent alors 100 pixels (déduit).
+- **Offset de réflectance (mesuré sur une scène).** Un offset mal géré fausse le NBR : avec des valeurs typiques, un dNBR de 0,58 tombe à 0,40 si l'offset de −1000 reste dans les valeurs. Earth Search a deux collections L2A, et les deux déclarent `scale: 0.0001` et `offset: -0.1` dans `raster:bands` pour B8A et B12. Sur la scène `31TDH` du 29 août 2025 (référence de traitement 05.11), en médiane sur les pixels SCL eau et végétation :
+
+  | Collection | B12 eau | B8A eau | B12 végétation | B8A végétation |
+  |---|---|---|---|---|
+  | `sentinel-2-l2a` | 87 | 74 | 1 013 | 3 016 |
+  | `sentinel-2-c1-l2a` | 1 087 | 1 072 | 2 005 | 4 009 |
+
+  Dans `sentinel-2-l2a`, les pixels ont déjà perdu les 1000 (`earthsearch:boa_offset_applied: true`), mais `raster:bands` annonce encore l'offset : un lecteur qui l'applique le retirerait deux fois et donnerait une eau à −0,09. Dans `sentinel-2-c1-l2a`, les pixels gardent les 1000 et les métadonnées sont justes : appliquer `raster:bands` une seule fois donne une eau à 0,009. Règle : collection `sentinel-2-c1-l2a`, réflectance = valeur × 0,0001 − 0,1, appliquée une seule fois, soit par le lecteur (lazycogs : à vérifier s'il lit `raster:bands`), soit par notre code, jamais les deux. Un test vérifie que l'eau claire sort entre 0 et 0,03.
 - **Prérequis (vérifié).** Le dossier `~/Documents/Projects/data/fire-monitoring/` contient désormais la zone d'étude, les points MODIS et le masque forêt. Il manque encore `tippecanoe` et les dépendances du `pyproject.toml`. Les accès de publication n'ont pas été vérifiés. Aucune clé FIRMS n'est nécessaire pour le pilote.
 - **Détails de publication (vérifié).**
   - `data_shape: single-map` s'écrit à la main, et `start` et `end` sont obligatoires (`platform-publish/docs/manifests.md:41-44`).
@@ -161,12 +182,10 @@ Chaque point indique ce qui est réglé par les décisions prises et ce qui rest
 | eo-pipe | `merge_vector` ignore les fichiers illisibles et ne reprojette pas | Non utilisé pour la fusion annuelle |
 | eo-pipe | `ParallelBatch` est séquentiel ; pas de reprise de run | Reprise gérée par événement |
 | eo-pipe | Version imposée `gdal==3.12.2` (`pyproject.toml:23`) ; l'import lance bash et met en cache l'environnement OTB (`steps/otb/__init__.py:7-8`) | Motif du retrait d'eo-pipe du pilote |
-| eo-stac | Filtre nuages au niveau de la scène uniquement | Part de pixels clairs calculée dans ce projet |
-| eo-stac | Alias `swir1`/`swir2` sans `swir16`/`swir22` d'Earth Search | Clés brutes ou `extra_aliases` (`aliases.py:65`) |
-| eo-stac | Pas de grille commune ni d'offset ; métadonnées d'assets `raster:bands` perdues (`search.py:317-324`) | Grille et offset gérés dans ce projet |
-| eo-stac | Pas de nouvel essai sur la recherche, d'après le code (`search.py:212`) ; noms d'extraits basés sur l'emprise, donc tout regroupement modifié retélécharge (`storage.py:65`) | Figer les événements avant les téléchargements |
 | platform-publish | Pas de génération PMTiles ; `brustt:dates` n'est pas pris en charge | tippecanoe ou pilote PMTiles de GDAL, à tester ; dates gardées en colonnes |
 | brustt-platform | Pas de filtre temporel ni de style selon les données | Accepté pour le pilote |
+
+eo-stac n'est pas utilisé pour l'instant : il télécharge des extraits, contraire à l'exigence de lecture cloud native. Ses limites relevées (filtre nuages par scène, alias `swir16`/`swir22` absents, pas de grille commune, `raster:bands` perdu, pas de nouvel essai sur la recherche) ne concernent donc plus le pilote.
 
 Correction par rapport à l'inventaire initial : `S2_TILE_GRID_PATH` n'est pas figé, c'est une valeur par défaut que l'on peut remplacer (`eo-pipe/src/eo_pipe/io/tiles.py:30,120`).
 
@@ -178,6 +197,8 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 
 - La chaîne complète, des points MODIS à la publication, sur 2025 et la zone `pilot_area_bbox`.
 - Une interface de modèle minimale : `detect(pre, post, valid) -> DataArray`, sur une seule grille. Elle reçoit les bandes plutôt que le NBR et renvoie trois états : brûlé, non brûlé, non observé.
+- Une lecture cloud native : recherche avec pystac-client, lecture à la demande des COG avec lazycogs, calcul en xarray et rioxarray. Aucune scène Sentinel-2 n'est téléchargée et aucun composite n'est écrit.
+- Aucun raster enregistré : le dNBR et le masque brûlé sont calculés en mémoire, et seuls les polygones de l'événement sont conservés.
 - Un GeoParquet par événement, qui sert de point de reprise ; le fichier annuel est reconstruit à chaque fois.
 - Un registre de tous les événements et une reprise par événement. Le fichier d'état est écrit en dernier par `os.replace`, comme dans `flood-monitoring/src/flood_monitoring/raster.py:85-103`. Un événement en échec est enregistré, le run continue, puis se termine avec un code d'erreur.
 - Un document des limites des librairies dans `docs/`.
@@ -202,11 +223,14 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 - **Écart de 30 jours pour le regroupement :** sur les données 2025, il crée un événement de 109 jours sur un même site.
 - **Fichier unique alimenté au fil de l'eau (Parquet ou GeoPackage) :** Parquet se prête mal à l'ajout, et une reprise par événement devient plus difficile.
 - **Framework de pipeline, abstraction de client FIRMS, classes abstraites et registre de modèles :** trop lourds pour une seule implémentation.
+- **odc-stac et stackstac :** remplacés par lazycogs (Development Seed, v0.8.0 sur PyPI), qui lit les COG des items STAC en `DataArray` xarray paresseux par lecture asynchrone (`async-geotiff`, `obstore`), dask étant optionnel. stackstac pourra servir de référence si lazycogs bloque sur la grille ou l'offset.
+- **Extraits téléchargés par eo-stac :** contraires à l'exigence de lecture cloud native. eo-stac pourra être réévalué plus tard.
 - **`composite.py` de flood-monitoring :** il fabrique une composition colorée radar, pas une médiane.
+- **Arrêter la fenêtre « après » de A au début de B :** sur 2025, B commence 7 à 10 jours après A dans 6 paires. La fenêtre de A tomberait alors à 4 à 7 jours, avec un risque de `no_clear_post`.
+- **Fusionner les polygones qui se recouvrent en gardant la date la plus ancienne :** la brûlure de B serait datée de A, avec jusqu'à 45 jours d'erreur.
 
 **Encore à comparer :**
 
-- stackstac ou odc-stac contre les extraits d'eo-stac : lecture à la demande, mais contraire à la préférence pour eo-stac.
 - Pilote PMTiles de GDAL contre tippecanoe, à tester avec `platform-publish validate`.
 - VIIRS seul contre VIIRS et MODIS.
 - Masque forêt IGN (millésimes 2021-2023) contre une couche plus récente, si les forêts disparues depuis gênent.
@@ -216,7 +240,9 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 
 ### Décisions prises
 
-- Noyau de traitement en rioxarray ; eo-stac pour la recherche et le téléchargement.
+- Lecture cloud native : pystac-client pour la recherche, lazycogs pour la lecture à la demande des COG, xarray et rioxarray pour le calcul. Aucun téléchargement brut de Sentinel-2 ; eo-stac n'est pas utilisé pour l'instant.
+- Catalogue : Earth Search d'Element84 (`https://earth-search.aws.element84.com/v1`), collection `sentinel-2-c1-l2a` (Collection 1 de l'ESA, COG publics dans `s3://e84-earth-search-sentinel-data`, région `us-west-2`, sans signature). La collection `sentinel-2-l2a` (seau `sentinel-cogs`, celui de la page du registre AWS) est écartée : ses métadonnées d'offset contredisent ses pixels. Sur la zone en 2025, les deux collections ont le même nombre de scènes à quelques unités près (par exemple 431 et 432 en août).
+- Stockage : seuls les polygones de chaque événement sont enregistrés (GeoParquet). Les bandes, les NBR, les composites, le dNBR et le masque restent en mémoire. Conséquence acceptée : changer le seuil dNBR ou le modèle oblige à relire les images, ce que déclenche déjà l'empreinte des paramètres.
 - eo-pipe retiré du pilote, contrairement à la consigne initiale : `rasterio.features` doit remplacer `SieveStep` et la polygonisation (non testé). Les limites restent documentées.
 - Zone : polygone de `~/Documents/Projects/data/fire-monitoring/study_area/pilot_area_bbox.gpkg` (Sud-Est, 15 départements, partie française seulement), année 2025.
 - Source des points : l'export EFFIS `hs_modis` 2025, figé dans `~/Documents/Projects/data/fire-monitoring/MODIS/`. VIIRS ne sera comparé que si les feux proches de 4 ha manquent.
@@ -227,12 +253,13 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 - Image avant : recherche de `date_start − 60 j` à `date_start − 1 j`, les 3 dates les plus claires, en privilégiant les plus récentes.
 - Image après : recherche de `last_detection + 3 j` à `last_detection + 45 j`, les 3 premières dates claires. Sans image exploitable, l'événement prend l'état `no_clear_post`.
 - Masque forêt : `~/Documents/Projects/data/fire-monitoring/masque_foret/masque-foret1_fr_hex.gpkg`, couche `masque-foret1` : 1,26 million de polygones en EPSG:2154, sur 96 départements, avec la seule classe `NATURE = Forêt`. Ses millésimes vont de 2021 à 2023 selon le département, produits par deux modèles IA. Sur la zone, il s'agit de 2021 pour 84, 30, 34, 11, 04, 66 et 48, de 2022 pour 81, 12 et 05, et de 2023 pour 26, 83, 07, 06 et 13. Une forêt brûlée ou coupée entre son millésime et 2025 peut encore y figurer. La licence n'a pas été vérifiée.
+- Dédoublonnage à la fusion annuelle : les polygones d'un événement voisin B, qui commence pendant la fenêtre « après » de A à moins de 2 km, sont soustraits de ceux de A ; le seuil de 4 ha est réappliqué ; si B est en échec, A garde la surface et le registre note `overlaps_failed_neighbor`.
 - Carte annuelle sans filtre de date.
 - `FireEvent` comme nom de l'unité du pipeline.
 
 ### Déroulé du pilote
 
-1. Sans télécharger de Sentinel-2, passer les points MODIS, le filtre des sources fixes, le filtre forêt et le regroupement sur toute la zone. Mesurer le nombre d'événements, leur durée et leur emprise, puis décider de continuer ou non selon le budget disque et temps.
+1. Sans lire de Sentinel-2, passer les points MODIS, le filtre des sources fixes, le filtre forêt et le regroupement sur toute la zone. Mesurer le nombre d'événements, leur durée et leur emprise, puis décider de continuer ou non selon le budget de temps et le volume à lire.
 2. Traiter de bout en bout cinq événements choisis : un grand feu, un feu proche de 4 ha, une coupe rase avec point chaud, un cas nuageux, un cas proche de 6 °E (limite des fuseaux UTM). Ajouter une source fixe répétée, comme celle de Fos-sur-Mer, pour tester son filtre.
 3. Publier sous un identifiant temporaire, mesurer temps, volume et échecs par événement, contrôler à la main.
 4. Lancer ensuite toute la zone du pilote, un événement à la fois.
@@ -242,17 +269,17 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 1. **Couverture de l'image après :** quel taux de pixels valides exiger ? Proposition : 80 %.
 2. **Filtres :** quel seuil sur `confidence` et quelle règle de forêt pour les polygones ? La marge est décidée : 1 km.
 3. **Seuil dNBR :** proposition de 0,27. Faut-il le faire varier selon le type de forêt ?
-4. **Fusion :** quelle règle de dédoublonnage, et quelle date garde un polygone fusionné ? Faut-il aussi arrêter la fenêtre « après » au début d'un événement voisin ?
-5. **Catalogue :** Planetary Computer (utilisé par flood-monitoring) ou Earth Search ?
+4. **Fusion :** décidée, voir le problème bloquant 3 et « Décisions prises ».
+5. **Catalogue :** décidé, Earth Search, collection `sentinel-2-c1-l2a` (voir « Décisions prises »).
 6. **Masque forêt :** faut-il garder les trois usages (sans précision, « Forêt avec usage agricole déclaré », « Forêt urbaine probable ») ou exclure les deux derniers ?
 7. **Événements non évalués :** faut-il les afficher sur la carte ou seulement dans le rapport ? Le registre est-il publié ?
 8. **Limites d'année :** quelle année possède un feu à cheval sur deux années ? Les feux de janvier et de décembre demandent aussi des images de 2024 et 2026.
-9. **Stockage :** faut-il conserver les composites ? Le budget disque sera connu après l'étape 1.
+9. **Stockage :** décidé, seuls les polygones sont conservés (voir « Décisions prises »).
 10. **Identifiant de publication :** les slugs ne sont jamais réutilisés. Un par année, ou un seul pour plusieurs années plus tard ?
 
 Questions d'implémentation à régler pendant la conception :
 
 - agrandir la zone quand une brûlure touche son bord ;
-- garder dask ou non : il semble inutile pour la plupart des événements, mais un grand feu comme celui de l'Aude a une emprise de points de 17,5 km ; à confirmer sur ce cas ;
-- garder uniquement le NBR ou aussi d'autres bandes pour les futurs modèles (l'interface proposée reçoit les bandes) ;
+- lazycogs, à vérifier sur un prototype : reprojection vers une grille commune, assemblage des scènes d'un même jour, application de `raster:bands`, besoin ou non de dask (optionnel dans lazycogs), et articulation avec pystac-client (lazycogs dépend de rustac, qui sait aussi interroger un catalogue) ; un grand feu comme celui de l'Aude, avec une emprise de points de 17,5 km, sert de cas de mesure ;
 - choisir la liste des états d'un événement.
+
