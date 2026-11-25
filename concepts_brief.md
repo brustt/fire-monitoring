@@ -1,8 +1,8 @@
 # Cartographie des surfaces brûlées en forêt : pilote 2025
 
 * **Auteur :** brustt
-* **Date :** 2026-11-03
-* **État :** brouillon après une première revue multi-angles ; les décisions de la section « À trancher » restent ouvertes.
+* **Date :** 2026-11-03, mis à jour le 2026-11-25
+* **État :** concept arrêté. Toutes les décisions de la section « À trancher » sont prises, sauf le seuil dNBR (décision 3), qui attend un premier passage de la chaîne sur un feu connu (étape 2 du pilote). Plusieurs règles s'appuient sur des mesures faites sur les données 2025 (points MODIS, SCL de `sentinel-2-c1-l2a`).
 
 ## Vue d'ensemble
 
