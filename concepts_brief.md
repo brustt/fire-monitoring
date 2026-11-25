@@ -77,7 +77,7 @@ Chaque point indique ce qui est réglé par les décisions prises et ce qui rest
   - regroupement par composantes connexes, qui ne dépend pas de l'ordre des points, à moins de 2 km et 7 jours d'écart au plus ;
   - `date_start` (premier point) sert de date de l'événement, et `last_detection` est le dernier point ;
   - les fenêtres avant et après sont calculées depuis ces deux dates ;
-  - chaque image est un composite des 3 dates claires retenues : il n'y a plus de contradiction entre « une date » et « médiane ».
+  - chaque image est un composite des dates claires retenues (3 au plus, 1 ou 2 acceptées pour l'image après) : il n'y a plus de contradiction entre « une date » et « médiane ».
 - *Mesuré :* l'export EFFIS n'a pas de champ de type de source, donc les sources fixes ne peuvent être repérées que par leurs détections répétées. En reliant les points à moins de 1 km sur toute l'année, on obtient 308 sites dans la zone :
 
   | Jours distincts de détection | Sites | Points |
@@ -103,7 +103,7 @@ Chaque point indique ce qui est réglé par les décisions prises et ce qui rest
   - il contient l'état, la raison, le nombre de scènes, la part de pixels clairs, les dates, les polygones restants après chaque filtre et l'empreinte des paramètres ;
   - les dates retenues et les dates effectivement lues sont comparées ; une erreur de lecture, après les nouveaux essais de GDAL (`GDAL_HTTP_MAX_RETRY`, à régler), met l'événement en échec avec un état distinct de `no_clear_post` ;
   - un événement en échec est enregistré, le run continue, puis se termine avec un code d'erreur.
-- *Reste à trancher :* la liste des états, choix d'implémentation fait dans le Technical Plan, et le taux de pixels clairs exigé (décision 1).
+- *Reste à trancher :* la liste des états, choix d'implémentation fait dans le Technical Plan, et le taux de pixels clairs exigé, réglé par la règle de l'image après (voir ci-dessous).
 
 **3. Doublons dans la fusion annuelle.**
 
@@ -154,7 +154,17 @@ Chaque point indique ce qui est réglé par les décisions prises et ce qui rest
 - **Coupes rases et écobuages (déduit).** Un brûlage de rémanents sur une coupe rase, ou un écobuage en lisière, peut passer les deux filtres. Ce faux positif restera possible dans le pilote.
 - **Végétation méditerranéenne (déduit).** Dans le Sud-Est, beaucoup de feux brûlent de la garrigue ou du maquis. Le masque ne garde que la classe `Forêt` : la carte ne montrera que la part forestière de ces feux, et la description publiée doit le dire. Le seuil dNBR de 0,27 a été proposé sans tenir compte de ces milieux.
 - **Filtre nuages au bon niveau (déduit).** Le pourcentage de nuages d'une scène (`eo:cloud_cover`) dit peu de chose sur une petite zone. Il faut un filtre large dans la recherche rustac, puis lire la SCL seule sur l'emprise de l'événement, mesurer la part de pixels clairs, et ne lire B8A et B12 que pour les dates retenues.
-- **La SCL peut effacer les brûlures (déduit).** Une brûlure récente peut être classée « sombre » (classe 2) ou « ombre » (classe 3). Le masque doit être testé sur un feu connu avant d'être figé.
+- **La SCL peut effacer les brûlures (déduit, un indice mesuré).** Une brûlure récente peut être classée « sombre » (classe 2) ou « ombre » (classe 3). Sur le feu de l'Aude, la première date claire après le feu (11 août 2025) classe 4 % de l'emprise en classe 2, probablement la brûlure elle-même. Sur l'ensemble des événements, compter la classe 2 comme claire ne change la part d'événements à 3 dates claires que d'un point. Le masque doit être testé sur un feu connu avant d'être figé.
+- **Couverture de l'image après (mesuré).** SCL de `sentinel-2-c1-l2a` lue sur l'emprise de chaque événement 2025 (enveloppe de ses points + 1 km), pour chaque date de `last_detection + 3 j` à `+ 45 j` : 243 événements, 5 697 lectures, sans erreur. Classes claires : 4, 5, 6 et 7. Une date est claire si au moins T % de l'emprise est claire. Les fourchettes viennent de deux façons de combiner les tuiles d'un même jour (meilleure tuile seule, ou somme) :
+
+  | Seuil T | Fenêtre | 3 dates claires | Juin à octobre | Reste de l'année | Aucune date claire | Jours jusqu'à la 3e date (médiane / 90e centile) |
+  |---|---|---|---|---|---|---|
+  | 50 % | 45 j | 98 % | 100 % | 96 % | 1 | 14 / 29 |
+  | 80 % | 45 j | 97 à 98 % | 99 à 100 % | 93 à 94 % | 1 | 15 / 33 |
+  | 90 % | 45 j | 94 à 97 % | 97 à 99 % | 89 à 92 % | 2 à 3 | 16 / 34 |
+  | 80 % | 20 j | 68 à 70 % | 82 à 85 % | 43 à 45 % | 9 à 10 | 12 à 13 / 19 |
+
+  Le feu de l'Aude, à 80 %, n'a des dates claires qu'à 5, 28 et 43 jours de sa dernière détection : exiger 3 dates étale son composite sur 38 jours, avec un risque de repousse. D'où la règle retenue : accepter 1 ou 2 dates.
 - **Grille commune (non testé).** La zone chevauche les fuseaux UTM 31 et 32 (limite à 6 °E) : vers cette longitude, des scènes d'un même jour arrivent dans deux CRS (déduit). Les scènes doivent être lues sur une grille imposée (CRS, résolution, emprise), et celles d'un même jour assemblées avant la médiane. Il reste à vérifier ce que lazycogs fait lui-même (reprojection, assemblage par jour) et ce qu'il faut écrire en xarray, sur un événement proche de 6 °E. `event_grid` (`flood-monitoring/src/flood_monitoring/merge_stage.py:57`) peut servir à définir l'emprise. Travailler à 20 m avec B8A, B12 et SCL évite de rééchantillonner les bandes ; 4 ha représentent alors 100 pixels (déduit).
 - **Offset de réflectance (mesuré sur une scène).** Un offset mal géré fausse le NBR : avec des valeurs typiques, un dNBR de 0,58 tombe à 0,40 si l'offset de −1000 reste dans les valeurs. Earth Search a deux collections L2A, et les deux déclarent `scale: 0.0001` et `offset: -0.1` dans `raster:bands` pour B8A et B12. Sur la scène `31TDH` du 29 août 2025 (référence de traitement 05.11), en médiane sur les pixels SCL eau et végétation :
 
@@ -226,6 +236,7 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 - **odc-stac et stackstac :** remplacés par lazycogs (Development Seed, v0.8.0 sur PyPI), qui lit les COG des items STAC en `DataArray` xarray paresseux par lecture asynchrone (`async-geotiff`, `obstore`), dask étant optionnel. stackstac pourra servir de référence si lazycogs bloque sur la grille ou l'offset.
 - **Extraits téléchargés par eo-stac :** contraires à l'exigence de lecture cloud native. eo-stac pourra être réévalué plus tard.
 - **`composite.py` de flood-monitoring :** il fabrique une composition colorée radar, pas une médiane.
+- **Fenêtre « après » de 20 jours :** à 80 % de pixels clairs, seuls 68 à 70 % des événements y trouvent 3 dates claires, et 43 à 45 % hors de juin à octobre.
 - **Arrêter la fenêtre « après » de A au début de B :** sur 2025, B commence 7 à 10 jours après A dans 6 paires. La fenêtre de A tomberait alors à 4 à 7 jours, avec un risque de `no_clear_post`.
 - **Fusionner les polygones qui se recouvrent en gardant la date la plus ancienne :** la brûlure de B serait datée de A, avec jusqu'à 45 jours d'erreur.
 
@@ -251,7 +262,7 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 - Regroupement : composantes connexes, moins de 2 km et 7 jours d'écart au plus, après retrait des sources fixes : sites de 1 km avec plus de 4 détections étalées sur au moins 60 jours dans l'année.
 - Dates : `date_start` est le premier point et sert de date de l'événement. `last_detection` est le dernier point : c'est la dernière détection, pas la fin réelle du feu.
 - Image avant : recherche de `date_start − 60 j` à `date_start − 1 j`, les 3 dates les plus claires, en privilégiant les plus récentes.
-- Image après : recherche de `last_detection + 3 j` à `last_detection + 45 j`, les 3 premières dates claires. Sans image exploitable, l'événement prend l'état `no_clear_post`.
+- Image après : recherche de `last_detection + 3 j` à `last_detection + 45 j`. Une date est claire si au moins 80 % de l'emprise de l'événement (enveloppe de ses points + 1 km) est claire dans la SCL (classes 4, 5, 6 et 7). On prend les 3 premières dates claires ; s'il n'y en a qu'une ou deux, on les utilise et le registre note `n_post_dates`. Sans aucune date claire, l'événement prend l'état `no_clear_post` (1 événement sur 243 en 2025). Dans le composite, un pixel sans observation claire est « non observé ».
 - Masque forêt : `~/Documents/Projects/data/fire-monitoring/masque_foret/masque-foret1_fr_hex.gpkg`, couche `masque-foret1` : 1,26 million de polygones en EPSG:2154, sur 96 départements, avec la seule classe `NATURE = Forêt`. Ses millésimes vont de 2021 à 2023 selon le département, produits par deux modèles IA. Sur la zone, il s'agit de 2021 pour 84, 30, 34, 11, 04, 66 et 48, de 2022 pour 81, 12 et 05, et de 2023 pour 26, 83, 07, 06 et 13. Une forêt brûlée ou coupée entre son millésime et 2025 peut encore y figurer. La licence n'a pas été vérifiée.
 - Dédoublonnage à la fusion annuelle : les polygones d'un événement voisin B, qui commence pendant la fenêtre « après » de A à moins de 2 km, sont soustraits de ceux de A ; le seuil de 4 ha est réappliqué ; si B est en échec, A garde la surface et le registre note `overlaps_failed_neighbor`.
 - Carte annuelle sans filtre de date.
@@ -266,7 +277,7 @@ Si le shell exporte l'environnement OTB, retirer eo-pipe ne suffit pas. `fire-mo
 
 ### À trancher
 
-1. **Couverture de l'image après :** quel taux de pixels valides exiger ? Proposition : 80 %.
+1. **Couverture de l'image après :** décidée, 80 % de l'emprise claire par date, 1 à 3 dates (voir « Décisions prises »).
 2. **Filtres :** quel seuil sur `confidence` et quelle règle de forêt pour les polygones ? La marge est décidée : 1 km.
 3. **Seuil dNBR :** proposition de 0,27. Faut-il le faire varier selon le type de forêt ?
 4. **Fusion :** décidée, voir le problème bloquant 3 et « Décisions prises ».
